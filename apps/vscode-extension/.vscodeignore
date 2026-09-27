@@ -1,4 +1,6 @@
 src/
 tsconfig.json
-*.map
+**/*.map
+**/*.d.ts
+icon.svg
 node_modules/
