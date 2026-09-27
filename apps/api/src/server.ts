@@ -17,7 +17,7 @@ type AuthUser = { id: string; email: string; role: GlobalRole };
 
 const tools = [
   { name: "read", description: "Read a file in the VS Code workspace.", inputSchema: { type: "object", properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["path"] } },
-  { name: "bash", description: "Run a shell command in the VS Code workspace.", inputSchema: { type: "object", properties: { command: { type: "string" }, timeout: { type: "number" } }, required: ["command"] } },
+  { name: "bash", description: "Run a shell command in the VS Code workspace.", inputSchema: { type: "object", properties: { command: { type: "string" }, timeout: { type: "number", minimum: 1, maximum: 300, description: "Maximum execution time in seconds. For 2 minutes use 120, not 120000. Omit to use the VS Code setting (120 seconds by default)." } }, required: ["command"] } },
   { name: "edit", description: "Edit a file using exact unique oldText/newText replacements.", inputSchema: { type: "object", properties: { path: { type: "string" }, edits: { type: "array", items: { type: "object", properties: { oldText: { type: "string" }, newText: { type: "string" } }, required: ["oldText", "newText"] } } }, required: ["path", "edits"] } },
   { name: "write", description: "Write or create a file in the VS Code workspace.", inputSchema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } },
   { name: "workspace_info", description: "Get the connected VS Code workspace path, platform, and connection state.", inputSchema: { type: "object", properties: {} } }
@@ -111,6 +111,20 @@ async function mcpRequest(c: Context): Promise<Response> {
   const recordCall = async (status: "success" | "error", result: string | null, error: string | null) => {
     await db.addToolCall({ id: crypto.randomUUID(), tool: String(name), status, workspace: match.workspace.id, userId: null, durationMs: Date.now() - started, arguments: JSON.stringify(args), result, error, createdAt: Date.now() });
   };
+  let agentArgs = args;
+  if (name === "bash") {
+    try {
+      const input = bodyObject(args);
+      if (input.timeout !== undefined) {
+        if (typeof input.timeout !== "number" || !Number.isFinite(input.timeout) || input.timeout < 1 || input.timeout > 300) throw new Error("bash timeout must be between 1 and 300 seconds; use 120 for 2 minutes");
+        // MCP 使用秒，现有 Agent 使用毫秒；只在边界换算，省略时保留插件配置。
+        agentArgs = { ...input, timeout: Math.round(input.timeout * 1000) };
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await recordCall("error", null, message); return jsonRpcError(id, -32602, message);
+    }
+  }
   if (name === "workspace_info") reply = { ok: true, content: JSON.stringify({ workspaceId: match.workspace.id, name: match.workspace.name, root: agent?.workspacePath ?? null, platform: agent?.platform ?? null, connected: agent?.socket.readyState === WebSocket.OPEN, role: match.token.role }) };
   else if (match.token.role === "viewer" && name !== "read") {
     const message = "Workspace token role viewer can only call read and workspace_info";
@@ -119,7 +133,7 @@ async function mcpRequest(c: Context): Promise<Response> {
     const message = "No VS Code agent is connected";
     await recordCall("error", null, message); return jsonRpcError(id, -32000, message, 502);
   } else {
-    try { reply = await callAgent(agent, name as Exclude<RelayTool, "workspace_info">, args); }
+    try { reply = await callAgent(agent, name as Exclude<RelayTool, "workspace_info">, agentArgs); }
     catch (error) { const message = error instanceof Error ? error.message : String(error); await recordCall("error", null, message); return jsonRpcError(id, -32000, message, 502); }
   }
   await recordCall(reply.ok ? "success" : "error", reply.content, reply.ok ? null : reply.content);

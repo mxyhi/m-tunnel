@@ -9,6 +9,7 @@ import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
 import WebSocket from 'ws';
+import { bashTool } from '../../../packages/workspace-tools/dist/index.js';
 
 test('调用详情保存参数和结果，迁移旧记录并隔离工作区权限', { timeout: 30000 }, async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'mtunnel-calls-test-'));
@@ -31,6 +32,8 @@ test('调用详情保存参数和结果，迁移旧记录并隔离工作区权�
   const api = (path, method = 'GET', body, session = cookie) => fetch(`${base}/api${path}`, { method, headers: { cookie: session, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const connection = await (await api('/connections', 'POST')).json();
   const mcp = (name, args = {}) => fetch(`${base}/mcp/${connection.token}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) });
+  const toolList = await (await fetch(`${base}/mcp/${connection.token}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) })).json();
+  const timeoutSchema = toolList.result.tools.find(tool => tool.name === 'bash').inputSchema.properties.timeout;
   await mcp('workspace_info');
   const rows = await (await api('/tool-calls')).json();
   assert.equal(rows.length, 1);
@@ -52,20 +55,44 @@ test('调用详情保存参数和结果，迁移旧记录并隔离工作区权�
   ws.send(JSON.stringify({ type: 'agent_hello', name: '详情测试', workspace: '/tmp/detail', platform: 'darwin' }));
   await once(ws, 'message');
   const output = '输出第一行\n第二行\n' + '内容'.repeat(40000);
-  ws.on('message', (raw) => {
+  const received = [];
+  ws.on('message', async (raw) => {
     const call = JSON.parse(raw.toString());
     if (call.type !== 'tool_call') return;
+    received.push(call.arguments);
+    if (call.arguments.command === 'sleep 1.2; printf delayed') {
+      try {
+        const result = await bashTool({ cwd: dir }, call.arguments);
+        ws.send(JSON.stringify({ type: 'tool_result', id: call.id, ok: true, content: result.content }));
+      } catch (error) {
+        ws.send(JSON.stringify({ type: 'tool_result', id: call.id, ok: false, content: error.message }));
+      }
+      return;
+    }
     if (call.arguments.command === 'disconnect') { ws.close(); return; }
     const ok = call.arguments.command !== 'fail';
     ws.send(JSON.stringify({ type: 'tool_result', id: call.id, ok, content: ok ? (call.arguments.command === 'empty' ? '' : output) : '命令执行失败' }));
   });
-  const args = { command: 'printf "你好\\n"', timeout: 5000 };
+  const args = { command: 'printf "你好\\n"', timeout: 120 };
+  assert.equal((await mcp('bash', args)).status, 200);
+  assert.equal(received.at(-1).timeout, 120000, 'MCP 超时以秒为单位，转发给插件时换算成毫秒');
+  assert.equal(timeoutSchema.minimum, 1);
+  assert.equal(timeoutSchema.maximum, 300);
+  assert.match(timeoutSchema.description, /seconds/);
+  for (const timeout of [0, -1, 301, 120000, '60', null]) {
+    const count = received.length;
+    assert.equal((await mcp('bash', { command: 'invalid', timeout })).status, 400, '拒绝错误单位或非法超时');
+    assert.equal(received.length, count, '非法超时不能触发执行');
+  }
   assert.equal((await mcp('bash', args)).status, 200);
   let latest = (await (await api('/tool-calls')).json())[0];
   let call = await (await api(`/tool-calls/${latest.id}`)).json();
   assert.deepEqual(JSON.parse(call.arguments), args);
   assert.equal(call.result, output, '多行长输出完整保留');
   assert.equal(call.error, null);
+  const slow = await (await mcp('bash', { command: 'sleep 1.2; printf delayed', timeout: 2 })).json();
+  assert.equal(slow.result.isError, false, '超过 1 秒的真实命令不应被秒/毫秒混淆截断');
+  assert.equal(slow.result.content[0].text, 'delayed');
   for (const command of ['empty', 'fail', 'disconnect', 'offline']) {
     await mcp('bash', { command });
     latest = (await (await api('/tool-calls')).json())[0];
@@ -73,6 +100,7 @@ test('调用详情保存参数和结果，迁移旧记录并隔离工作区权�
     assert.deepEqual(JSON.parse(call.arguments), { command });
     assert.equal(call.status, command === 'empty' ? 'success' : 'error');
     if (command === 'empty') assert.equal(call.result, '', '空输出和未记录不同');
+    if (command === 'empty') assert.equal('timeout' in received.at(-1), false, '省略超时继续使用插件配置');
     else assert.ok(call.error);
     if (command === 'fail') assert.equal(call.result, '命令执行失败');
     if (command === 'disconnect' || command === 'offline') assert.equal(call.result, null);

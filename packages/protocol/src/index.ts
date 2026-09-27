@@ -2,6 +2,7 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 export type ToolName = "read" | "bash" | "edit" | "write";
 export interface ReadInput { path: string; offset?: number; limit?: number }
+// Agent 协议中的 timeout 使用毫秒；公开 MCP 的秒数由 Relay 换算。
 export interface BashInput { command: string; timeout?: number }
 export interface EditInput { path: string; edits: Array<{ oldText: string; newText: string }> }
 export interface WriteInput { path: string; content: string }
