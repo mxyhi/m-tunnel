@@ -1,0 +1,32 @@
+# m-tunnel 领域词汇
+
+## 用户
+
+可以登录管理端的人。用户拥有一个全局角色，并可以通过工作区成员关系获得具体工作区的访问权限。
+
+## 全局角色
+
+- `admin`：管理所有用户、工作区、令牌和调用记录。
+- `member`：只能访问自己被加入的工作区。
+
+## 工作区
+
+一个 VS Code Agent 连接所代表的逻辑项目边界。文件工具始终在工作区根目录内执行。
+
+## 工作区成员角色
+
+- `owner`：管理工作区成员和令牌，拥有全部工具权限。
+- `editor`：可以调用 `read`、`bash`、`edit`、`write`。
+- `viewer`：只能调用 `read`。
+
+## 工作区令牌
+
+连接 ChatGPT MCP 和 VS Code Agent 的凭据。令牌属于一个工作区，可以撤销和重新生成；数据库只保存哈希值。
+
+## 会话
+
+管理端登录后的 HttpOnly Cookie 会话。会话与 MCP 工作区令牌分离。
+
+## 数据库驱动
+
+PostgreSQL 使用 `postgres.js`，通过 `max` 和 `idle_timeout` 配置连接池；SQLite 使用 `@libsql/client`。业务 API 的主要耗时来自 Agent WebSocket 和工作区文件 IO，因此不把某个驱动的微基准差异当作产品性能承诺。

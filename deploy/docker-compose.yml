@@ -1,0 +1,22 @@
+name: m-tunnel
+
+services:
+  m-tunnel-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: m-tunnel-api
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:18290:18290"
+    volumes:
+      - ./data:/app/data
+  m-tunnel-web:
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+    container_name: m-tunnel-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18291:80"

@@ -1,0 +1,10 @@
+{
+  "name": "@m-tunnel/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "dev": "tsx src/server.ts" },
+  "dependencies": { "@hono/node-server": "^1.19.3", "@m-tunnel/db": "workspace:*", "@m-tunnel/protocol": "workspace:*", "hono": "^4.9.7", "ws": "^8.18.3" },
+  "devDependencies": { "@types/node": "^24.5.2", "@types/ws": "^8.18.1", "tsx": "^4.20.5" }
+}

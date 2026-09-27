@@ -1,0 +1,9 @@
+node_modules
+.git
+.planning
+apps/*/src
+packages/*/src
+apps/admin/src
+apps/admin/node_modules
+!apps/admin/src/
+!apps/admin/src/**

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+data/
+.planning/
+.DS_Store
+*.vsix
