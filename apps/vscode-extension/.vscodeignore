@@ -4,3 +4,6 @@ tsconfig.json
 **/*.d.ts
 icon.svg
 node_modules/
+
+tests/
+dist/connection-config.cjs

@@ -9,7 +9,7 @@ export type WorkspaceRole = "owner" | "editor" | "viewer";
 
 export interface UserRecord { id: string; email: string; passwordHash: string; role: GlobalRole; createdAt: number }
 export interface SessionRecord { id: string; userId: string; email: string; role: GlobalRole; tokenHash: string; expiresAt: number }
-export interface WorkspaceRecord { id: string; name: string; ownerId: string; createdAt: number }
+export interface WorkspaceRecord { id: string; name: string; ownerId: string; createdAt: number; workspacePath?: string | null; platform?: string | null; registeredAt?: number | null }
 export interface WorkspaceMemberRecord { workspaceId: string; userId: string; email: string; role: WorkspaceRole }
 export interface WorkspaceTokenRecord { id: string; workspaceId: string; prefix: string; role: WorkspaceRole; createdAt: number; revokedAt: number | null }
 export interface WorkspaceTokenMatch { workspace: WorkspaceRecord; token: WorkspaceTokenRecord }
@@ -40,6 +40,7 @@ export interface DatabaseHandle {
   createWorkspace(workspace: WorkspaceRecord): Promise<void>;
   listWorkspaces(userId: string, isAdmin: boolean): Promise<WorkspaceRecord[]>;
   findWorkspace(id: string): Promise<WorkspaceRecord | null>;
+  registerWorkspaceAgent(id: string, bindingKey: string, name: string, path: string, platform: string): Promise<boolean>;
   addWorkspaceMember(workspaceId: string, userId: string, role: WorkspaceRole): Promise<void>;
   listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMemberRecord[]>;
   findWorkspaceRole(workspaceId: string, userId: string): Promise<WorkspaceRole | null>;
@@ -57,7 +58,7 @@ function valueNullableNumber(row: SqlRow, key: string): number | null { const va
 function globalRole(value: string): GlobalRole { if (value !== "admin" && value !== "member") throw new Error(`Invalid global role: ${value}`); return value; }
 function workspaceRole(value: string): WorkspaceRole { if (value !== "owner" && value !== "editor" && value !== "viewer") throw new Error(`Invalid workspace role: ${value}`); return value; }
 function mapUser(row: SqlRow): UserRecord { return { id: valueString(row, "id"), email: valueString(row, "email"), passwordHash: valueString(row, "password_hash"), role: globalRole(valueString(row, "role")), createdAt: valueNumber(row, "created_at") }; }
-function mapWorkspace(row: SqlRow): WorkspaceRecord { return { id: valueString(row, "id"), name: valueString(row, "name"), ownerId: valueString(row, "owner_id"), createdAt: valueNumber(row, "created_at") }; }
+function mapWorkspace(row: SqlRow): WorkspaceRecord { return { id: valueString(row, "id"), name: valueString(row, "name"), ownerId: valueString(row, "owner_id"), createdAt: valueNumber(row, "created_at"), workspacePath: typeof row.workspace_path === "string" ? row.workspace_path : null, platform: typeof row.platform === "string" ? row.platform : null, registeredAt: valueNullableNumber(row, "registered_at") }; }
 function mapToken(row: SqlRow): WorkspaceTokenRecord { return { id: valueString(row, "id"), workspaceId: valueString(row, "workspace_id"), prefix: valueString(row, "token_prefix"), role: workspaceRole(valueString(row, "role")), createdAt: valueNumber(row, "created_at"), revokedAt: valueNullableNumber(row, "revoked_at") }; }
 function mapToolCall(row: SqlRow): ToolCallRecord { return { id: valueString(row, "id"), tool: valueString(row, "tool"), status: valueString(row, "status"), workspace: typeof row.workspace === "string" ? row.workspace : null, userId: typeof row.user_id === "string" ? row.user_id : null, durationMs: valueNullableNumber(row, "duration_ms"), error: typeof row.error === "string" ? row.error : null, createdAt: valueNumber(row, "created_at") }; }
 
@@ -67,6 +68,7 @@ async function ensureSchema(run: (sql: string, args?: readonly SqlArg[]) => Prom
   await run("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL, created_at BIGINT NOT NULL)");
   await run("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at BIGINT NOT NULL, created_at BIGINT NOT NULL)");
   await run("CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_id TEXT NOT NULL, created_at BIGINT NOT NULL)");
+  await run("CREATE TABLE IF NOT EXISTS workspace_agents (workspace_id TEXT PRIMARY KEY, binding_key TEXT NOT NULL, workspace_path TEXT NOT NULL, platform TEXT NOT NULL, registered_at BIGINT NOT NULL)");
   await run("CREATE TABLE IF NOT EXISTS workspace_members (workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY (workspace_id, user_id))");
   await run("CREATE TABLE IF NOT EXISTS workspace_tokens (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, token_prefix TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'editor', created_at BIGINT NOT NULL, revoked_at BIGINT)");
   await run("CREATE TABLE IF NOT EXISTS tool_calls (id TEXT PRIMARY KEY, tool TEXT NOT NULL, status TEXT NOT NULL, workspace TEXT, user_id TEXT, duration_ms INTEGER, error TEXT, created_at BIGINT NOT NULL)");
@@ -106,8 +108,31 @@ function createHandle(driver: "sqlite" | "postgres", run: (sql: string, args?: r
     findSession: async (tokenHash, now) => { const rows = (await run("SELECT s.id, s.user_id, u.email, u.role, s.token_hash, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ? LIMIT 1", [tokenHash, now])).rows; if (!rows[0]) return null; return { id: valueString(rows[0], "id"), userId: valueString(rows[0], "user_id"), email: valueString(rows[0], "email"), role: globalRole(valueString(rows[0], "role")), tokenHash: valueString(rows[0], "token_hash"), expiresAt: valueNumber(rows[0], "expires_at") }; },
     deleteSession: async (tokenHash) => { await run("DELETE FROM sessions WHERE token_hash = ?", [tokenHash]); },
     createWorkspace: async (workspace) => { await run("INSERT INTO workspaces (id, name, owner_id, created_at) VALUES (?, ?, ?, ?)", [workspace.id, workspace.name, workspace.ownerId, workspace.createdAt]); },
-    listWorkspaces: async (userId, isAdmin) => { const rows = (await run(isAdmin ? "SELECT id, name, owner_id, created_at FROM workspaces ORDER BY created_at DESC" : "SELECT w.id, w.name, w.owner_id, w.created_at FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id WHERE m.user_id = ? ORDER BY w.created_at DESC", isAdmin ? [] : [userId])).rows; return rows.map(mapWorkspace); },
+    listWorkspaces: async (userId, isAdmin) => {
+      const fields = "w.id, w.name, w.owner_id, w.created_at, a.workspace_path, a.platform, a.registered_at";
+      const rows = (await run(isAdmin
+        ? `SELECT ${fields} FROM workspaces w LEFT JOIN workspace_agents a ON a.workspace_id = w.id ORDER BY w.created_at DESC`
+        : `SELECT ${fields} FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id LEFT JOIN workspace_agents a ON a.workspace_id = w.id WHERE m.user_id = ? ORDER BY w.created_at DESC`, isAdmin ? [] : [userId])).rows;
+      return rows.map(mapWorkspace);
+    },
     findWorkspace: async (id) => { const rows = (await run("SELECT id, name, owner_id, created_at FROM workspaces WHERE id = ? LIMIT 1", [id])).rows; return rows[0] ? mapWorkspace(rows[0]) : null; },
+    registerWorkspaceAgent: async (id, bindingKey, name, path, platform) => {
+      // A credential stays bound to one VS Code folder, even after relay restarts.
+      await run("INSERT INTO workspace_agents (workspace_id, binding_key, workspace_path, platform, registered_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (workspace_id) DO NOTHING", [id, bindingKey, path, platform, Date.now()]);
+      const row = (await run("SELECT binding_key FROM workspace_agents WHERE workspace_id = ?", [id])).rows[0];
+      if (!row) return false;
+      if (row.binding_key !== bindingKey) {
+        // Old clients only sent platform/path. Upgrade that binding once, without
+        // allowing a new credential import to move an already identified folder.
+        if (row.binding_key !== `${platform}:${path}`) return false;
+        await run("UPDATE workspace_agents SET binding_key = ? WHERE workspace_id = ? AND binding_key = ?", [bindingKey, id, row.binding_key]);
+        const current = (await run("SELECT binding_key FROM workspace_agents WHERE workspace_id = ?", [id])).rows[0];
+        if (current?.binding_key !== bindingKey) return false;
+      }
+      await run("UPDATE workspaces SET name = ? WHERE id = ?", [name, id]);
+      await run("UPDATE workspace_agents SET workspace_path = ?, platform = ? WHERE workspace_id = ?", [path, platform, id]);
+      return true;
+    },
     addWorkspaceMember: async (workspaceId, userId, role) => { await run("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?) ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = excluded.role", [workspaceId, userId, role]); },
     listWorkspaceMembers: async (workspaceId) => (await run("SELECT m.workspace_id, m.user_id, u.email, m.role FROM workspace_members m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = ? ORDER BY u.email", [workspaceId])).rows.map((row) => ({ workspaceId: valueString(row, "workspace_id"), userId: valueString(row, "user_id"), email: valueString(row, "email"), role: workspaceRole(valueString(row, "role")) })),
     findWorkspaceRole: async (workspaceId, userId) => { const rows = (await run("SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ? LIMIT 1", [workspaceId, userId])).rows; return rows[0] ? workspaceRole(valueString(rows[0], "role")) : null; },

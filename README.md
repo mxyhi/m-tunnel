@@ -32,7 +32,7 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 `m-tunnel-api` 监听 18290，`m-tunnel-web` 监听 18291。将 `deploy/1panel-proxy-root.conf` 放到 1Panel 站点的 `proxy/root.conf`，再由 HTTPS 站点代理 `/api/`、`/mcp/`、`/agent/` 和管理台。
 
-管理台登录后创建工作区 Token：
+管理台登录后点击“连接 VS Code”，生成连接信息：
 
 ```text
 https://your-domain.example/mcp/<WORKSPACE_TOKEN>
@@ -48,6 +48,12 @@ wss://your-domain.example/agent/<WORKSPACE_TOKEN>
 仓库已提供 OIDC Trusted Publishing 工作流，但 Marketplace 端的可信发布绑定尚未验证完成。启用自动发布前，需要将发布者与 `mxyhi/m-tunnel` 的 `.github/workflows/publish-vscode.yml` 绑定，再创建版本标签：
 
 ```bash
-git tag vscode-v0.1.1
-git push origin vscode-v0.1.1
+git tag vscode-v0.1.2
+git push origin vscode-v0.1.2
 ```
+
+## 管理台连接 VS Code
+
+管理台使用官方 [Marmelab Shadcn Admin Kit](https://github.com/marmelab/shadcn-admin-kit)。登录后点击“连接 VS Code”，在 VS Code 打开目标文件夹并一键导入；工作区名称由插件自动登记。管理台提供 MCP 链接复制，插件登记成功后显示通知，也可从状态栏菜单随时复制链接。
+
+新连接统一拥有工具读写能力。升级时需同时更新 API、管理台与 VS Code 插件至 0.1.2；旧只读凭据继续受原权限限制。服务端保留 Token 哈希，插件将新导入的凭据按工作区保存在 SecretStorage。

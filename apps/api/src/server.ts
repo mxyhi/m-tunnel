@@ -1,7 +1,8 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { WebSocketServer, WebSocket } from "ws";
+import { WebSocket } from "ws";
+import { attachAgentServer, type Agent, type ToolReply } from "./agents.js";
 import { createDatabase, type DatabaseHandle, type GlobalRole, type SessionRecord, type WorkspaceRole } from "@m-tunnel/db";
 import type { Server } from "node:http";
 import { clearSessionCookie, cookieValue, createToken, hashPassword, hashToken, sessionCookie, verifyPassword } from "./auth.js";
@@ -12,9 +13,6 @@ const SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
 const toolNames = ["read", "bash", "edit", "write", "workspace_info"] as const;
 type RelayTool = (typeof toolNames)[number];
 type JsonObject = Record<string, unknown>;
-type ToolReply = { ok: boolean; content: string; details?: { exitCode?: number; stderr?: string } };
-type Pending = { resolve: (value: ToolReply) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
-type Agent = { socket: WebSocket; workspacePath: string; platform: string; pending: Map<string, Pending> };
 type AuthUser = { id: string; email: string; role: GlobalRole };
 
 const tools = [
@@ -50,9 +48,14 @@ async function callAgent(agent: Agent, tool: Exclude<RelayTool, "workspace_info"
 async function bootstrap(database: DatabaseHandle): Promise<void> {
   const email = (process.env.ADMIN_EMAIL ?? "admin@example.com").toLowerCase(); let admin = await database.findUserByEmail(email);
   if (!admin) { const password = process.env.ADMIN_PASSWORD ?? (process.env.NODE_ENV === "production" ? "" : "change-me-now"); if (!password) throw new Error("ADMIN_PASSWORD is required for the first production startup"); admin = { id: crypto.randomUUID(), email, passwordHash: hashPassword(password), role: "admin", createdAt: Date.now() }; await database.createUser(admin); console.log(`Created administrator ${email}`); }
-  const workspaces = await database.listWorkspaces(admin.id, true); const workspace = workspaces[0] ?? { id: crypto.randomUUID(), name: "Default workspace", ownerId: admin.id, createdAt: Date.now() };
-  if (!workspaces[0]) { await database.createWorkspace(workspace); await database.addWorkspaceMember(workspace.id, admin.id, "owner"); }
-  const legacy = process.env.MCP_TOKEN; if (legacy && !(await database.findWorkspaceToken(hashToken(legacy)))) { await database.createWorkspaceToken({ id: crypto.randomUUID(), workspaceId: workspace.id, tokenHash: hashToken(legacy), prefix: legacy.slice(0, 8), role: "owner", createdAt: Date.now() }); console.log("Imported MCP_TOKEN into the default workspace"); }
+  const legacy = process.env.MCP_TOKEN;
+  if (legacy && !(await database.findWorkspaceToken(hashToken(legacy)))) {
+    const workspaces = await database.listWorkspaces(admin.id, true);
+    const workspace = workspaces[0] ?? { id: crypto.randomUUID(), name: "等待 VS Code 连接", ownerId: admin.id, createdAt: Date.now() };
+    if (!workspaces[0]) { await database.createWorkspace(workspace); await database.addWorkspaceMember(workspace.id, admin.id, "owner"); }
+    await database.createWorkspaceToken({ id: crypto.randomUUID(), workspaceId: workspace.id, tokenHash: hashToken(legacy), prefix: legacy.slice(0, 8), role: "owner", createdAt: Date.now() });
+    console.log("Imported MCP_TOKEN into the default workspace");
+  }
 }
 await bootstrap(db);
 
@@ -69,13 +72,23 @@ app.get("/api/auth/me", async (c) => { const user = await requireUser(c); return
 app.get("/api/users", async (c) => { const user = await requireUser(c); if (!user) return jsonError(c, "Unauthorized", 401); if (!isAdmin(user)) return jsonError(c, "Forbidden", 403); return c.json((await db.listUsers()).map((item) => userResponse(item))); });
 app.patch("/api/users/:id", async (c) => { const user = await requireUser(c); if (!user) return jsonError(c, "Unauthorized", 401); if (!isAdmin(user)) return jsonError(c, "Forbidden", 403); try { const body = bodyObject(await c.req.json()); const role = body.role; if (role !== "admin" && role !== "member") throw new Error("Invalid global role"); await db.updateUserRole(c.req.param("id"), role); return c.json({ ok: true }); } catch (error) { return jsonError(c, error instanceof Error ? error.message : String(error), 422); } });
 app.get("/api/workspaces", async (c) => { const user = await requireUser(c); if (!user) return jsonError(c, "Unauthorized", 401); return c.json(await db.listWorkspaces(user.id, isAdmin(user))); });
-app.post("/api/workspaces", async (c) => { const user = await requireUser(c); if (!user) return jsonError(c, "Unauthorized", 401); try { const body = bodyObject(await c.req.json()); const workspace = { id: crypto.randomUUID(), name: stringField(body, "name"), ownerId: user.id, createdAt: Date.now() }; await db.createWorkspace(workspace); await db.addWorkspaceMember(workspace.id, user.id, "owner"); return c.json(workspace, 201); } catch (error) { return jsonError(c, error instanceof Error ? error.message : String(error), 422); } });
+app.post("/api/connections", async (c) => {
+  const user = await requireUser(c);
+  if (!user) return jsonError(c, "Unauthorized", 401);
+  const workspace = { id: crypto.randomUUID(), name: "等待 VS Code 连接", ownerId: user.id, createdAt: Date.now() };
+  await db.createWorkspace(workspace);
+  await db.addWorkspaceMember(workspace.id, user.id, "owner");
+  const token = createToken(); const id = crypto.randomUUID();
+  await db.createWorkspaceToken({ id, workspaceId: workspace.id, tokenHash: hashToken(token), prefix: token.slice(0, 8), role: "editor", createdAt: Date.now() });
+  console.log(JSON.stringify({ event: "connection_created", workspaceId: workspace.id, userId: user.id }));
+  return c.json({ id, workspaceId: workspace.id, token }, 201);
+});
 app.get("/api/workspaces/:id/members", async (c) => { const user = await requireUser(c); const id = c.req.param("id"); if (!user) return jsonError(c, "Unauthorized", 401); if (!(await canAccessWorkspace(user, id))) return jsonError(c, "Forbidden", 403); return c.json(await db.listWorkspaceMembers(id)); });
 app.put("/api/workspaces/:id/members/:userId", async (c) => { const user = await requireUser(c); const id = c.req.param("id"); if (!user) return jsonError(c, "Unauthorized", 401); if (!(await canManageWorkspace(user, id))) return jsonError(c, "Forbidden", 403); try { const body = bodyObject(await c.req.json()); await db.addWorkspaceMember(id, c.req.param("userId"), roleField(body.role)); return c.json({ ok: true }); } catch (error) { return jsonError(c, error instanceof Error ? error.message : String(error), 422); } });
 app.get("/api/workspaces/:id/tokens", async (c) => { const user = await requireUser(c); const id = c.req.param("id"); if (!user) return jsonError(c, "Unauthorized", 401); if (!(await canAccessWorkspace(user, id))) return jsonError(c, "Forbidden", 403); return c.json(await db.listWorkspaceTokens(id)); });
-app.post("/api/workspaces/:id/tokens", async (c) => { const user = await requireUser(c); const id = c.req.param("id"); if (!user) return jsonError(c, "Unauthorized", 401); if (!(await canManageWorkspace(user, id))) return jsonError(c, "Forbidden", 403); try { const body = bodyObject(await c.req.json()); const role = roleField(body.role ?? "editor"); const raw = createToken(); const token = { id: crypto.randomUUID(), workspaceId: id, tokenHash: hashToken(raw), prefix: raw.slice(0, 8), role, createdAt: Date.now() }; await db.createWorkspaceToken(token); return c.json({ id: token.id, prefix: token.prefix, role, token: raw }, 201); } catch (error) { return jsonError(c, error instanceof Error ? error.message : String(error), 422); } });
-app.delete("/api/workspaces/:id/tokens/:tokenId", async (c) => { const user = await requireUser(c); const id = c.req.param("id"); if (!user) return jsonError(c, "Unauthorized", 401); if (!(await canManageWorkspace(user, id))) return jsonError(c, "Forbidden", 403); await db.revokeWorkspaceToken(c.req.param("tokenId"), id, Date.now()); return c.json({ ok: true }); });
-app.get("/api/status", async (c) => { const user = await requireUser(c); if (!user) return jsonError(c, "Unauthorized", 401); const workspaces = await db.listWorkspaces(user.id, isAdmin(user)); return c.json(workspaces.map((workspace) => { const agent = agents.get(workspace.id); return { ...workspace, agentConnected: agent?.socket.readyState === WebSocket.OPEN, workspacePath: agent?.workspacePath ?? null, platform: agent?.platform ?? null }; })); });
+app.post("/api/workspaces/:id/tokens", async (c) => { const user = await requireUser(c); const id = c.req.param("id"); if (!user) return jsonError(c, "Unauthorized", 401); if (!(await canManageWorkspace(user, id))) return jsonError(c, "Forbidden", 403); try { const body = bodyObject(await c.req.json()); if (body.role !== undefined && body.role !== "editor") throw new Error("Token 不再区分角色，请省略 role"); const role = "editor"; const raw = createToken(); const token = { id: crypto.randomUUID(), workspaceId: id, tokenHash: hashToken(raw), prefix: raw.slice(0, 8), role: "editor" as const, createdAt: Date.now() }; await db.createWorkspaceToken(token); return c.json({ id: token.id, prefix: token.prefix, role, token: raw }, 201); } catch (error) { return jsonError(c, error instanceof Error ? error.message : String(error), 422); } });
+app.delete("/api/workspaces/:id/tokens/:tokenId", async (c) => { const user = await requireUser(c); const id = c.req.param("id"); if (!user) return jsonError(c, "Unauthorized", 401); if (!(await canManageWorkspace(user, id))) return jsonError(c, "Forbidden", 403); await db.revokeWorkspaceToken(c.req.param("tokenId"), id, Date.now()); const agent = agents.get(id); if (agent?.tokenId === c.req.param("tokenId")) agent.socket.close(4001, "token_revoked"); return c.json({ ok: true }); });
+app.get("/api/status", async (c) => { const user = await requireUser(c); if (!user) return jsonError(c, "Unauthorized", 401); const workspaces = await db.listWorkspaces(user.id, isAdmin(user)); return c.json(workspaces.map((workspace) => { const agent = agents.get(workspace.id); return { ...workspace, agentConnected: agent?.socket.readyState === WebSocket.OPEN, workspacePath: agent?.workspacePath ?? workspace.workspacePath ?? null, platform: agent?.platform ?? workspace.platform ?? null }; })); });
 app.get("/api/tool-calls", async (c) => { const user = await requireUser(c); if (!user) return jsonError(c, "Unauthorized", 401); const workspaces = await db.listWorkspaces(user.id, isAdmin(user)); return c.json(await db.listToolCalls(workspaces.map((workspace) => workspace.id))); });
 
 async function mcpRequest(c: Context): Promise<Response> {
@@ -93,7 +106,6 @@ async function mcpRequest(c: Context): Promise<Response> {
 }
 app.get("/mcp/:secret", (c) => c.text("m-tunnel MCP endpoint\n\n", 200, { "content-type": "text/event-stream", "cache-control": "no-cache", "access-control-allow-origin": "*" })); app.post("/mcp/:secret", mcpRequest);
 
-const server = serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }) as Server; const wss = new WebSocketServer({ noServer: true });
-server.on("upgrade", async (request, socket, head) => { const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`); const secret = url.pathname.startsWith("/agent/") ? decodeURIComponent(url.pathname.slice(7)) : ""; const match = secret ? await db.findWorkspaceToken(hashToken(secret)) : null; if (!match) { socket.destroy(); return; } wss.handleUpgrade(request, socket, head, (client) => wss.emit("connection", client, match.workspace.id)); });
-wss.on("connection", (client: WebSocket, workspaceId: string) => { const previous = agents.get(workspaceId); if (previous) previous.socket.close(1012, "replaced"); const agent: Agent = { socket: client, workspacePath: "", platform: "", pending: new Map() }; agents.set(workspaceId, agent); client.on("message", (raw: Buffer) => { try { const message = JSON.parse(raw.toString()) as { type?: string; id?: string; ok?: boolean; content?: string; details?: ToolReply["details"]; workspace?: string; platform?: string }; if (message.type === "agent_hello") { agent.workspacePath = message.workspace ?? ""; agent.platform = message.platform ?? ""; } if (message.type === "tool_result" && message.id) { const item = agent.pending.get(message.id); if (!item) return; clearTimeout(item.timer); agent.pending.delete(message.id); item.resolve({ ok: message.ok === true, content: message.content ?? "", ...(message.details ? { details: message.details } : {}) }); } } catch { /* malformed agent messages are ignored */ } }); client.on("close", () => { if (agents.get(workspaceId) === agent) agents.delete(workspaceId); for (const [id, item] of agent.pending) { clearTimeout(item.timer); item.reject(new Error("VS Code agent disconnected")); agent.pending.delete(id); } }); });
+const server = serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }) as Server;
+attachAgentServer(server, db, agents);
 console.log(`m-tunnel API listening on ${port} (${db.driver}, postgres.js when PostgreSQL is configured)`);

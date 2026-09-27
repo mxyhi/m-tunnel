@@ -7,6 +7,6 @@
     "build": "pnpm -r build",
     "check": "pnpm -r typecheck",
     "dev:api": "pnpm --filter @m-tunnel/api dev",
-    "test": "pnpm --filter @m-tunnel/workspace-tools test"
+    "test": "pnpm --filter @m-tunnel/workspace-tools test && pnpm --filter @m-tunnel/admin test && pnpm --filter @m-tunnel/api test && pnpm --filter m-tunnel-vscode test"
   }
 }

@@ -12,7 +12,7 @@
 
 `nginx-mtunnel.conf` 是 1Panel 网站主配置模板，主配置通过 `proxy/*.conf` 引入代理规则。`1panel-proxy-root.conf` 可作为该站点的 `proxy/root.conf` 内容。
 
-登录管理台后，在工作区 Token 页面创建 Token。MCP 地址格式：
+登录管理台后点击“连接 VS Code”，复制 MCP 链接或一键导入 VS Code。工作区名称由插件自动登记，无需手动创建。MCP 地址格式：
 
 ```text
 https://mtunnel.mxyhi.com/mcp/<WORKSPACE_TOKEN>

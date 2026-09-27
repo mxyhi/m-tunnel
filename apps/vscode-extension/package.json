@@ -2,35 +2,108 @@
   "name": "m-tunnel-vscode",
   "displayName": "m-tunnel Workspace MCP",
   "description": "Expose the current VS Code workspace as a guarded MCP server.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "mxyer",
   "icon": "icon.png",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/mxyhi/m-tunnel.git", "directory": "apps/vscode-extension" },
-  "bugs": { "url": "https://github.com/mxyhi/m-tunnel/issues" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mxyhi/m-tunnel.git",
+    "directory": "apps/vscode-extension"
+  },
+  "bugs": {
+    "url": "https://github.com/mxyhi/m-tunnel/issues"
+  },
   "homepage": "https://github.com/mxyhi/m-tunnel#readme",
-  "categories": ["Other"],
-  "keywords": ["MCP", "workspace", "ChatGPT", "AI"],
-  "engines": { "vscode": "^1.96.0" },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "MCP",
+    "workspace",
+    "ChatGPT",
+    "AI"
+  ],
+  "engines": {
+    "vscode": "^1.96.0"
+  },
   "main": "./dist/extension.js",
-  "activationEvents": ["onStartupFinished", "onCommand:m-tunnel.start", "onCommand:m-tunnel.stop"],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:m-tunnel.start",
+    "onCommand:m-tunnel.stop",
+    "onUri"
+  ],
   "contributes": {
     "commands": [
-      { "command": "m-tunnel.start", "title": "m-tunnel: Connect Workspace" },
-      { "command": "m-tunnel.stop", "title": "m-tunnel: Disconnect Workspace" },
-      { "command": "m-tunnel.copyMcpUrl", "title": "m-tunnel: Copy MCP URL" }
+      {
+        "command": "m-tunnel.start",
+        "title": "m-tunnel: 连接工作区"
+      },
+      {
+        "command": "m-tunnel.stop",
+        "title": "m-tunnel: 断开连接"
+      },
+      {
+        "command": "m-tunnel.copyMcpUrl",
+        "title": "m-tunnel: 复制 MCP 链接"
+      },
+      {
+        "command": "m-tunnel.importConnection",
+        "title": "m-tunnel: 导入连接"
+      },
+      {
+        "command": "m-tunnel.menu",
+        "title": "m-tunnel: 管理连接"
+      }
     ],
     "configuration": {
       "title": "m-tunnel",
       "properties": {
-        "mTunnel.relayUrl": { "type": "string", "default": "https://mtunnel.mxyhi.com", "description": "m-tunnel relay URL" },
-        "mTunnel.token": { "type": "string", "default": "", "description": "MCP pairing token" },
-        "mTunnel.autoStart": { "type": "boolean", "default": true, "description": "Connect when VS Code starts" },
-        "mTunnel.bashTimeoutMs": { "type": "number", "default": 120000, "minimum": 1000, "maximum": 300000 }
+        "mTunnel.relayUrl": {
+          "type": "string",
+          "default": "https://mtunnel.mxyhi.com",
+          "description": "m-tunnel relay URL"
+        },
+        "mTunnel.token": {
+          "type": "string",
+          "default": "",
+          "description": "旧版 Token 配置；推荐从管理台一键导入，凭据按工作区加密保存。"
+        },
+        "mTunnel.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Connect when VS Code starts"
+        },
+        "mTunnel.bashTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 1000,
+          "maximum": 300000
+        }
       }
     }
   },
-  "scripts": { "build": "tsc -p tsconfig.json --emitDeclarationOnly && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js", "typecheck": "tsc -p tsconfig.json --noEmit" },
-  "dependencies": { "@m-tunnel/protocol": "workspace:*", "ws": "^8.18.3" },
-  "devDependencies": { "@types/node": "^24.5.2", "@types/vscode": "^1.96.0", "@types/ws": "^8.18.1", "esbuild": "^0.25.10", "typescript": "^5.9.2" }
+  "scripts": {
+    "build": "tsc -p tsconfig.json --emitDeclarationOnly && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "esbuild src/connection-config.ts --bundle --platform=node --format=cjs --outfile=dist/connection-config.cjs && node --test tests/*.test.cjs"
+  },
+  "dependencies": {
+    "@m-tunnel/protocol": "workspace:*",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/vscode": "^1.96.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.25.10",
+    "typescript": "^5.9.2"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "m-tunnel 需要在可信工作区执行文件和命令工具。"
+    }
+  }
 }

@@ -22,6 +22,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter m-tunnel-vscode build
+      - run: pnpm build
+      - run: pnpm check
+      - run: pnpm test
       - working-directory: apps/vscode-extension
         run: pnpm dlx @vscode/vsce@latest publish --no-dependencies --oidc

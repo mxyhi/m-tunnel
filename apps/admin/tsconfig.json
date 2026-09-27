@@ -1,1 +1,16 @@
-{ "extends": "../../tsconfig.base.json", "compilerOptions": { "jsx": "react-jsx", "lib": ["ES2022", "DOM"], "allowImportingTsExtensions": true, "noEmit": true }, "include": ["src"] }
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/*"] },
+    "types": ["vite/client", "node"],
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "exactOptionalPropertyTypes": false
+  },
+  "include": ["src"]
+}

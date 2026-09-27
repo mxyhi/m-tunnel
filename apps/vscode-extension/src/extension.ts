@@ -1,23 +1,11 @@
 import * as vscode from "vscode";
 import { dirname, join, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
-import WebSocket from "ws";
-import type { AgentMessage, ToolCallMessage, ToolName } from "@m-tunnel/protocol";
+import { activateConnections } from "./connection.js";
+import type { ToolName } from "@m-tunnel/protocol";
 
 type JsonObject = Record<string, unknown>;
 type ToolReply = { ok: boolean; content: string; details?: { exitCode?: number; stderr?: string } };
-
-let socket: WebSocket | undefined;
-let statusBar: vscode.StatusBarItem;
-let heartbeatTimer: NodeJS.Timeout | undefined;
-let reconnectTimer: NodeJS.Timeout | undefined;
-let reconnectEnabled = true;
-
-function rootFolder(): vscode.WorkspaceFolder {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder) throw new Error("Open a workspace before connecting m-tunnel");
-  return folder;
-}
 
 function workspacePath(root: vscode.WorkspaceFolder, requested: string): vscode.Uri {
   const rootPath = resolve(root.uri.fsPath);
@@ -84,42 +72,6 @@ async function execute(root: vscode.WorkspaceFolder, tool: ToolName, args: JsonO
 function stringArg(args: JsonObject, key: string): string { const value = args[key]; if (typeof value !== "string") throw new Error(`${key} must be a string`); return value; }
 function numberArg(args: JsonObject, key: string, fallback: number): number { const value = args[key]; return typeof value === "number" && Number.isFinite(value) ? value : fallback; }
 
-function connect(context: vscode.ExtensionContext): void {
-  reconnectEnabled = true;
-  const config = vscode.workspace.getConfiguration("mTunnel"); const relay = config.get<string>("relayUrl", "https://mtunnel.mxyhi.com").replace(/\/$/, ""); const secret = config.get<string>("token", "");
-  if (!secret) { statusBar.text = "$(warning) m-tunnel token missing"; statusBar.tooltip = "Set mTunnel.token in VS Code settings"; return; }
-  const root = rootFolder(); const url = `${relay.replace(/^http/, "ws")}/agent/${encodeURIComponent(secret)}`;
-  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = undefined; }
-  if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = undefined; }
-  socket?.close(); socket = new WebSocket(url);
-  socket.on("open", () => {
-    statusBar.text = "$(plug) m-tunnel connected";
-    socket?.send(JSON.stringify({ type: "agent_hello", workspace: root.uri.fsPath, platform: process.platform }));
-    heartbeatTimer = setInterval(() => { if (socket?.readyState === WebSocket.OPEN) socket.ping(); }, 30_000);
-  });
-  socket.on("message", async (raw: Buffer) => {
-    try {
-      const message = JSON.parse(raw.toString()) as Partial<ToolCallMessage>;
-      if (message.type !== "tool_call" || typeof message.id !== "string" || !message.tool || !message.arguments || (message.tool !== "read" && message.tool !== "bash" && message.tool !== "edit" && message.tool !== "write")) return;
-      let result: ToolReply; try { result = await execute(root, message.tool, message.arguments as unknown as JsonObject); } catch (error) { result = { ok: false, content: error instanceof Error ? error.message : String(error) }; }
-      socket?.send(JSON.stringify({ type: "tool_result", id: message.id, ...result } satisfies AgentMessage & ToolReply));
-    } catch { /* ignore malformed relay messages */ }
-  });
-  socket.on("close", () => {
-    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = undefined; }
-    statusBar.text = "$(circle-slash) m-tunnel disconnected";
-    if (reconnectEnabled && !reconnectTimer) reconnectTimer = setTimeout(() => { reconnectTimer = undefined; connect(context); }, 5_000);
-  });
-  socket.on("error", () => { statusBar.text = "$(error) m-tunnel error"; });
-  context.subscriptions.push({ dispose: () => socket?.close() });
-}
-
 export function activate(context: vscode.ExtensionContext): void {
-  statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100); statusBar.text = "$(plug) m-tunnel"; statusBar.show(); context.subscriptions.push(statusBar);
-  context.subscriptions.push(vscode.commands.registerCommand("m-tunnel.start", () => connect(context)));
-  context.subscriptions.push(vscode.commands.registerCommand("m-tunnel.stop", () => { reconnectEnabled = false; if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = undefined; } if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = undefined; } socket?.close(); socket = undefined; statusBar.text = "$(circle-slash) m-tunnel stopped"; }));
-  context.subscriptions.push(vscode.commands.registerCommand("m-tunnel.copyMcpUrl", async () => { const config = vscode.workspace.getConfiguration("mTunnel"); const url = `${config.get<string>("relayUrl", "https://mtunnel.mxyhi.com")}/mcp/${encodeURIComponent(config.get<string>("token", ""))}`; await vscode.env.clipboard.writeText(url); void vscode.window.showInformationMessage("m-tunnel MCP URL copied"); }));
-  if (vscode.workspace.getConfiguration("mTunnel").get<boolean>("autoStart", true)) connect(context);
+  activateConnections(context, execute);
 }
-
-export function deactivate(): void { reconnectEnabled = false; if (reconnectTimer) clearTimeout(reconnectTimer); if (heartbeatTimer) clearInterval(heartbeatTimer); socket?.close(); }
