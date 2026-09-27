@@ -40,3 +40,12 @@ wss://your-domain.example/agent/<WORKSPACE_TOKEN>
 ```
 
 不要提交 `.env`、数据库文件、Token、密码、Cookie 或构建产物；这些路径已在 `.gitignore` 中排除。
+
+## 发布 VS Code 插件
+
+插件发布工作流使用 VS Code Marketplace 的 OIDC Trusted Publishing，不需要把 PAT 存进 GitHub。先在 Marketplace 发布者设置中将 `mxyhi/m-tunnel` 绑定为可信发布仓库，然后创建版本标签：
+
+```bash
+git tag vscode-v0.1.1
+git push origin vscode-v0.1.1
+```
