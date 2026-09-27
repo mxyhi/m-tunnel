@@ -52,8 +52,8 @@ export interface DatabaseHandle {
 }
 
 function valueString(row: SqlRow, key: string): string { const value = row[key]; if (typeof value !== "string") throw new Error(`Invalid database value: ${key}`); return value; }
-function valueNumber(row: SqlRow | undefined, key: string): number { if (!row) throw new Error(`Missing database row: ${key}`); const value = row[key]; if (typeof value === "number") return value; if (typeof value === "bigint") return Number(value); throw new Error(`Invalid database value: ${key}`); }
-function valueNullableNumber(row: SqlRow, key: string): number | null { const value = row[key]; return value === null || value === undefined ? null : typeof value === "number" ? value : Number(value); }
+function valueNumber(row: SqlRow | undefined, key: string): number { if (!row) throw new Error(`Missing database row: ${key}`); const value = row[key]; if (typeof value === "number") return value; if (typeof value === "bigint") return Number(value); if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value); throw new Error(`Invalid database value: ${key}`); }
+function valueNullableNumber(row: SqlRow, key: string): number | null { const value = row[key]; return value === null || value === undefined ? null : typeof value === "number" ? value : typeof value === "bigint" ? Number(value) : typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value)) ? Number(value) : null; }
 function globalRole(value: string): GlobalRole { if (value !== "admin" && value !== "member") throw new Error(`Invalid global role: ${value}`); return value; }
 function workspaceRole(value: string): WorkspaceRole { if (value !== "owner" && value !== "editor" && value !== "viewer") throw new Error(`Invalid workspace role: ${value}`); return value; }
 function mapUser(row: SqlRow): UserRecord { return { id: valueString(row, "id"), email: valueString(row, "email"), passwordHash: valueString(row, "password_hash"), role: globalRole(valueString(row, "role")), createdAt: valueNumber(row, "created_at") }; }
