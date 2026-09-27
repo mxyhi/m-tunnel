@@ -14,7 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 
 export type ShowButtonProps = {
-  label?: string;
+  label?: string | false;
   icon?: React.ReactNode;
   record?: RaRecord;
   resource?: string;
@@ -68,7 +68,7 @@ export const ShowButton = (props: ShowButtonProps) => {
   });
   return (
     <LinkBase
-      className={cn(buttonVariants({ variant: "outline" }))}
+      className={cn(buttonVariants({ variant: "outline", size: labelProp === false ? "icon" : "default" }))}
       to={link}
       onClick={stopPropagation}
       aria-label={typeof label === "string" ? label : undefined}

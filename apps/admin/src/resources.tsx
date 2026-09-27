@@ -119,6 +119,6 @@ export const CallList = () => <List title="调用记录" sort={{ field: "created
     <DataTable.Col source="durationMs" label="耗时（ms）" />
     <DataTable.Col source="createdAt" label="时间"><DateField source="createdAt" showTime locales="zh-CN" /></DataTable.Col>
     <DataTable.Col source="error" label="错误" />
-    <DataTable.Col label="操作"><ShowButton label="查看详情" /></DataTable.Col>
+    <DataTable.Col label="操作"><ShowButton label={false} aria-label="查看详情" title="查看详情" /></DataTable.Col>
   </DataTable>
 </List>;
