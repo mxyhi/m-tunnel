@@ -3,7 +3,7 @@
   "displayName": "m-tunnel Workspace MCP",
   "description": "Expose the current VS Code workspace as a guarded MCP server.",
   "version": "0.1.1",
-  "publisher": "mxyhi",
+  "publisher": "mxyer",
   "icon": "icon.png",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/mxyhi/m-tunnel.git", "directory": "apps/vscode-extension" },

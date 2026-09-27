@@ -43,7 +43,9 @@ wss://your-domain.example/agent/<WORKSPACE_TOKEN>
 
 ## 发布 VS Code 插件
 
-插件发布工作流使用 VS Code Marketplace 的 OIDC Trusted Publishing，不需要把 PAT 存进 GitHub。先在 Marketplace 发布者设置中将 `mxyhi/m-tunnel` 绑定为可信发布仓库，然后创建版本标签：
+插件发布者 ID 为 `mxyer`，扩展 ID 为 `mxyer.m-tunnel-vscode`（GitHub 仓库仍为 `mxyhi/m-tunnel`）。可在 Marketplace 管理台上传 VSIX 发布。
+
+仓库已提供 OIDC Trusted Publishing 工作流，但 Marketplace 端的可信发布绑定尚未验证完成。启用自动发布前，需要将发布者与 `mxyhi/m-tunnel` 的 `.github/workflows/publish-vscode.yml` 绑定，再创建版本标签：
 
 ```bash
 git tag vscode-v0.1.1
