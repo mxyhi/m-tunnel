@@ -9,6 +9,7 @@
 - 工作区成员角色（`owner` / `editor` / `viewer`）
 - 每个工作区独立 MCP Token，可撤销；数据库只保存哈希
 - SQLite 或 PostgreSQL；PostgreSQL 使用 `postgres.js` 连接池
+- 调用记录详情：参数、返回内容、错误和耗时，按工作区成员权限查看
 - Docker Compose 和 1Panel 网站代理配置
 
 ## 本地开发
@@ -57,3 +58,7 @@ git push origin vscode-v0.1.2
 管理台使用官方 [Marmelab Shadcn Admin Kit](https://github.com/marmelab/shadcn-admin-kit)。登录后点击“连接 VS Code”，在 VS Code 打开目标文件夹并一键导入；工作区名称由插件自动登记。管理台提供 MCP 链接复制，插件登记成功后显示通知，也可从状态栏菜单随时复制链接。
 
 新连接统一拥有工具读写能力。升级时需同时更新 API、管理台与 VS Code 插件至 0.1.2；旧只读凭据继续受原权限限制。服务端保留 Token 哈希，插件将新导入的凭据按工作区保存在 SecretStorage。
+
+## 调用记录详情
+
+点击调用记录行或“查看详情”可查看参数、返回内容和错误。升级 API 与管理台后，新调用会保存正文（包括命令、文件内容和输出）；SQLite/PostgreSQL 启动时自动补充详情字段。旧记录的正文无法补回，详情页显示未保存；本次功能无需更新 VS Code 插件。

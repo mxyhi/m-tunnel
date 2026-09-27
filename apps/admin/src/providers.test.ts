@@ -5,6 +5,18 @@ import { authProvider, dataProvider, request } from "./providers.ts";
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
 
+test("调用详情直接按 ID 请求并传递取消信号，不依赖最近记录列表", async () => {
+  const signal = new AbortController().signal;
+  globalThis.fetch = async (input, init) => {
+    assert.equal(input, "/api/tool-calls/old%2Fcall");
+    assert.equal(init?.signal, signal);
+    assert.equal(init?.credentials, "include");
+    return Response.json({ id: "old/call", arguments: "{}", result: "输出\n第二行" });
+  };
+  const result = await dataProvider.getOne("tool-calls", { id: "old/call", signal });
+  assert.equal(result.data.result, "输出\n第二行");
+});
+
 test("工作区从状态接口获取，按数字排序后分页，并携带会话", async () => {
   globalThis.fetch = async (input, init) => {
     assert.equal(input, "/api/status");

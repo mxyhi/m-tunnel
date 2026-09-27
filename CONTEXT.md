@@ -27,6 +27,10 @@
 
 管理端登录后的 HttpOnly Cookie 会话。会话与 MCP 工作区令牌分离。
 
+## 调用记录
+
+一个工作区工具调用的执行记录，包括工具、状态、耗时、调用参数、返回内容与错误。管理员和该工作区成员可查看；没有保存过正文的历史记录仍可查看执行概况。
+
 ## 数据库驱动
 
 PostgreSQL 使用 `postgres.js`，通过 `max` 和 `idle_timeout` 配置连接池；SQLite 使用 `@libsql/client`。业务 API 的主要耗时来自 Agent WebSocket 和工作区文件 IO，因此不把某个驱动的微基准差异当作产品性能承诺。

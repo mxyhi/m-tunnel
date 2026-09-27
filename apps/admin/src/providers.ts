@@ -4,6 +4,7 @@ export type User = { id: string; email: string; role: "admin" | "member" };
 export type Workspace = { id: string; name: string; ownerId: string; agentConnected: boolean; workspacePath: string | null; platform: string | null; registeredAt?: number | null };
 export type Member = { id: string; userId: string; email: string; role: "owner" | "editor" | "viewer" };
 export type Token = { id: string; prefix: string; role: Member["role"]; createdAt: number; revokedAt: number | null };
+export type ToolCallDetail = { id: string; tool: string; status: string; workspace: string | null; userId: string | null; durationMs: number | null; error: string | null; createdAt: number; arguments: string | null; result: string | null };
 type ApiRecord = RaRecord & Record<string, unknown>;
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -54,6 +55,7 @@ export const dataProvider: DataProvider = {
     return { data: data as RecordType[], total };
   },
   getOne: async <RecordType extends RaRecord = RaRecord>(resource: string, { id, signal }: GetOneParams & { signal?: AbortSignal }) => {
+    if (resource === "tool-calls") return { data: await request<RecordType>(`/api/tool-calls/${encodeURIComponent(id)}`, signal ? { signal } : undefined) };
     const data = (await records(resource, signal)).find((row) => String(row.id) === String(id));
     if (!data) throw new HttpError("记录不存在或无权访问", 404);
     return { data: data as RecordType };

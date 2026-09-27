@@ -3,6 +3,7 @@ import { required, useGetIdentity, useGetList, useNotify, useRecordContext, useR
 import { List } from "@/components/admin/list";
 import { DataTable } from "@/components/admin/data-table";
 import { Show } from "@/components/admin/show";
+import { ShowButton } from "@/components/admin/show-button";
 import { Edit } from "@/components/admin/edit";
 import { SimpleForm } from "@/components/admin/simple-form";
 import { TextInput } from "@/components/admin/text-input";
@@ -111,12 +112,13 @@ export const UserList = () => <List title="用户管理" exporter={false}>
 </List>;
 export const UserEdit = () => <Edit title="修改用户角色" actions={false} mutationMode="pessimistic"><SimpleForm><TextInput source="email" label="邮箱" disabled /><SelectInput source="role" label="全局角色" choices={roles} validate={required()} /></SimpleForm></Edit>;
 export const CallList = () => <List title="调用记录" sort={{ field: "createdAt", order: "DESC" }} exporter={false} queryOptions={{ refetchInterval: 5000 }}>
-  <DataTable rowClick={false} bulkActionButtons={false}>
+  <DataTable rowClick="show" bulkActionButtons={false}>
     <DataTable.Col source="tool" label="工具" />
     <DataTable.Col source="workspace" label="工作区"><ReferenceField source="workspace" reference="workspaces" link="show" empty="—" /></DataTable.Col>
     <DataTable.Col source="status" label="状态" />
     <DataTable.Col source="durationMs" label="耗时（ms）" />
     <DataTable.Col source="createdAt" label="时间"><DateField source="createdAt" showTime locales="zh-CN" /></DataTable.Col>
     <DataTable.Col source="error" label="错误" />
+    <DataTable.Col label="操作"><ShowButton label="查看详情" /></DataTable.Col>
   </DataTable>
 </List>;

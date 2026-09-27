@@ -14,12 +14,13 @@ export interface WorkspaceMemberRecord { workspaceId: string; userId: string; em
 export interface WorkspaceTokenRecord { id: string; workspaceId: string; prefix: string; role: WorkspaceRole; createdAt: number; revokedAt: number | null }
 export interface WorkspaceTokenMatch { workspace: WorkspaceRecord; token: WorkspaceTokenRecord }
 export interface ToolCallRecord { id: string; tool: string; status: string; workspace: string | null; userId: string | null; durationMs: number | null; error: string | null; createdAt: number }
+export interface ToolCallDetail extends ToolCallRecord { arguments: string | null; result: string | null }
 
 const sqliteToolCalls = sqliteTable("tool_calls", {
-  id: text("id").primaryKey(), tool: text("tool").notNull(), status: text("status").notNull(), workspace: text("workspace"), userId: text("user_id"), durationMs: integer("duration_ms"), error: text("error"), createdAt: integer("created_at").notNull()
+  id: text("id").primaryKey(), tool: text("tool").notNull(), status: text("status").notNull(), workspace: text("workspace"), userId: text("user_id"), durationMs: integer("duration_ms"), error: text("error"), createdAt: integer("created_at").notNull(), arguments: text("arguments"), result: text("result")
 });
 const postgresToolCalls = pgTable("tool_calls", {
-  id: pgText("id").primaryKey(), tool: pgText("tool").notNull(), status: pgText("status").notNull(), workspace: pgText("workspace"), userId: pgText("user_id"), durationMs: pgInteger("duration_ms"), error: pgText("error"), createdAt: pgInteger("created_at").notNull()
+  id: pgText("id").primaryKey(), tool: pgText("tool").notNull(), status: pgText("status").notNull(), workspace: pgText("workspace"), userId: pgText("user_id"), durationMs: pgInteger("duration_ms"), error: pgText("error"), createdAt: pgInteger("created_at").notNull(), arguments: pgText("arguments"), result: pgText("result")
 });
 
 type SqlArg = string | number | null;
@@ -48,8 +49,9 @@ export interface DatabaseHandle {
   listWorkspaceTokens(workspaceId: string): Promise<WorkspaceTokenRecord[]>;
   revokeWorkspaceToken(id: string, workspaceId: string, revokedAt: number): Promise<void>;
   findWorkspaceToken(tokenHash: string): Promise<WorkspaceTokenMatch | null>;
-  addToolCall(row: ToolCallRecord): Promise<void>;
+  addToolCall(row: ToolCallDetail): Promise<void>;
   listToolCalls(workspaceIds?: readonly string[]): Promise<ToolCallRecord[]>;
+  findToolCall(id: string): Promise<ToolCallDetail | null>;
 }
 
 function valueString(row: SqlRow, key: string): string { const value = row[key]; if (typeof value !== "string") throw new Error(`Invalid database value: ${key}`); return value; }
@@ -64,7 +66,7 @@ function mapToolCall(row: SqlRow): ToolCallRecord { return { id: valueString(row
 
 function postgresPlaceholders(sql: string): string { let index = 0; return sql.replace(/\?/g, () => `$${++index}`); }
 
-async function ensureSchema(run: (sql: string, args?: readonly SqlArg[]) => Promise<QueryRows>): Promise<void> {
+async function ensureSchema(run: (sql: string, args?: readonly SqlArg[]) => Promise<QueryRows>, driver: DatabaseHandle["driver"]): Promise<void> {
   await run("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL, created_at BIGINT NOT NULL)");
   await run("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at BIGINT NOT NULL, created_at BIGINT NOT NULL)");
   await run("CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_id TEXT NOT NULL, created_at BIGINT NOT NULL)");
@@ -74,6 +76,11 @@ async function ensureSchema(run: (sql: string, args?: readonly SqlArg[]) => Prom
   await run("CREATE TABLE IF NOT EXISTS tool_calls (id TEXT PRIMARY KEY, tool TEXT NOT NULL, status TEXT NOT NULL, workspace TEXT, user_id TEXT, duration_ms INTEGER, error TEXT, created_at BIGINT NOT NULL)");
   try { await run("ALTER TABLE tool_calls ADD COLUMN user_id TEXT"); } catch { /* existing schema already migrated */ }
   try { await run("ALTER TABLE workspace_tokens ADD COLUMN role TEXT NOT NULL DEFAULT 'editor'"); } catch { /* existing schema already migrated */ }
+  // 旧记录保留 NULL；先检查列，避免把真实迁移故障当成“已经迁移”吞掉。
+  const columns = (await run(driver === "sqlite" ? "PRAGMA table_info(tool_calls)" : "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'tool_calls'")).rows;
+  for (const name of ["arguments", "result"]) {
+    if (!columns.some((column) => column.name === name)) await run(`ALTER TABLE tool_calls ADD COLUMN ${name} TEXT`);
+  }
   await run("CREATE INDEX IF NOT EXISTS sessions_token_hash_idx ON sessions(token_hash)");
   await run("CREATE INDEX IF NOT EXISTS workspace_tokens_hash_idx ON workspace_tokens(token_hash)");
   await run("CREATE INDEX IF NOT EXISTS tool_calls_workspace_idx ON tool_calls(workspace)");
@@ -84,13 +91,13 @@ export async function createDatabase(): Promise<DatabaseHandle> {
   if (url?.startsWith("postgres://") || url?.startsWith("postgresql://")) {
     const client = postgres(url, { max: Number(process.env.DB_POOL_SIZE ?? 10), idle_timeout: 30 });
     const run = async (sql: string, args: readonly SqlArg[] = []): Promise<QueryRows> => { const result = await client.unsafe<SqlRow[]>(postgresPlaceholders(sql), [...args]); return { rows: result }; };
-    await ensureSchema(run);
+    await ensureSchema(run, "postgres");
     return createHandle("postgres", run, client);
   }
   const file = process.env.DB_FILE ?? "./data/m-tunnel.sqlite";
   const client: Client = createClient({ url: file.startsWith("file:") ? file : `file:${file}` });
   const run = async (sql: string, args: readonly SqlArg[] = []): Promise<QueryRows> => { const result = await client.execute({ sql, args: [...args] }); return { rows: result.rows.map((row) => row as unknown as SqlRow) }; };
-  await ensureSchema(run);
+  await ensureSchema(run, "sqlite");
   const db = drizzleSqlite(client);
   return createHandle("sqlite", run, db);
 }
@@ -140,7 +147,11 @@ function createHandle(driver: "sqlite" | "postgres", run: (sql: string, args?: r
     listWorkspaceTokens: async (workspaceId) => (await run("SELECT id, workspace_id, token_prefix, role, created_at, revoked_at FROM workspace_tokens WHERE workspace_id = ? ORDER BY created_at DESC", [workspaceId])).rows.map(mapToken),
     revokeWorkspaceToken: async (id, workspaceId, revokedAt) => { await run("UPDATE workspace_tokens SET revoked_at = ? WHERE id = ? AND workspace_id = ?", [revokedAt, id, workspaceId]); },
     findWorkspaceToken: async (tokenHash) => { const rows = (await run("SELECT w.id, w.name, w.owner_id, w.created_at, t.id AS token_id, t.workspace_id, t.token_prefix, t.role, t.created_at AS token_created_at, t.revoked_at FROM workspace_tokens t JOIN workspaces w ON w.id = t.workspace_id WHERE t.token_hash = ? AND t.revoked_at IS NULL LIMIT 1", [tokenHash])).rows; if (!rows[0]) return null; const row = rows[0]; return { workspace: { id: valueString(row, "id"), name: valueString(row, "name"), ownerId: valueString(row, "owner_id"), createdAt: valueNumber(row, "created_at") }, token: { id: valueString(row, "token_id"), workspaceId: valueString(row, "workspace_id"), prefix: valueString(row, "token_prefix"), role: workspaceRole(valueString(row, "role")), createdAt: valueNumber(row, "token_created_at"), revokedAt: valueNullableNumber(row, "revoked_at") } }; },
-    addToolCall: async (row) => { await run("INSERT INTO tool_calls (id, tool, status, workspace, user_id, duration_ms, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [row.id, row.tool, row.status, row.workspace, row.userId, row.durationMs, row.error, row.createdAt]); },
+    addToolCall: async (row) => { await run("INSERT INTO tool_calls (id, tool, status, workspace, user_id, duration_ms, error, created_at, arguments, result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [row.id, row.tool, row.status, row.workspace, row.userId, row.durationMs, row.error, row.createdAt, row.arguments, row.result]); },
+    findToolCall: async (id) => {
+      const row = (await run("SELECT id, tool, status, workspace, user_id, duration_ms, error, created_at, arguments, result FROM tool_calls WHERE id = ? LIMIT 1", [id])).rows[0];
+      return row ? { ...mapToolCall(row), arguments: typeof row.arguments === "string" ? row.arguments : null, result: typeof row.result === "string" ? row.result : null } : null;
+    },
     listToolCalls: async (workspaceIds) => { if (workspaceIds && workspaceIds.length === 0) return []; const filter = workspaceIds && workspaceIds.length > 0 ? ` WHERE workspace IN (${workspaceIds.map(() => "?").join(",")})` : ""; const rows = (await run(`SELECT id, tool, status, workspace, user_id, duration_ms, error, created_at FROM tool_calls${filter} ORDER BY created_at DESC LIMIT 100`, workspaceIds ? [...workspaceIds] : [])).rows; return rows.map(mapToolCall); }
   };
 }

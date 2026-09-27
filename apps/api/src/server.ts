@@ -90,6 +90,15 @@ app.post("/api/workspaces/:id/tokens", async (c) => { const user = await require
 app.delete("/api/workspaces/:id/tokens/:tokenId", async (c) => { const user = await requireUser(c); const id = c.req.param("id"); if (!user) return jsonError(c, "Unauthorized", 401); if (!(await canManageWorkspace(user, id))) return jsonError(c, "Forbidden", 403); await db.revokeWorkspaceToken(c.req.param("tokenId"), id, Date.now()); const agent = agents.get(id); if (agent?.tokenId === c.req.param("tokenId")) agent.socket.close(4001, "token_revoked"); return c.json({ ok: true }); });
 app.get("/api/status", async (c) => { const user = await requireUser(c); if (!user) return jsonError(c, "Unauthorized", 401); const workspaces = await db.listWorkspaces(user.id, isAdmin(user)); return c.json(workspaces.map((workspace) => { const agent = agents.get(workspace.id); return { ...workspace, agentConnected: agent?.socket.readyState === WebSocket.OPEN, workspacePath: agent?.workspacePath ?? workspace.workspacePath ?? null, platform: agent?.platform ?? workspace.platform ?? null }; })); });
 app.get("/api/tool-calls", async (c) => { const user = await requireUser(c); if (!user) return jsonError(c, "Unauthorized", 401); const workspaces = await db.listWorkspaces(user.id, isAdmin(user)); return c.json(await db.listToolCalls(workspaces.map((workspace) => workspace.id))); });
+app.get("/api/tool-calls/:id", async (c) => {
+  const user = await requireUser(c);
+  if (!user) return jsonError(c, "Unauthorized", 401);
+  const call = await db.findToolCall(c.req.param("id"));
+  if (!call) return jsonError(c, "Not found", 404);
+  // 正文可能包含文件和命令输出，详情必须与列表使用同一工作区权限边界。
+  if (!isAdmin(user) && (!call.workspace || !(await canAccessWorkspace(user, call.workspace)))) return jsonError(c, "Forbidden", 403);
+  return c.json(call);
+});
 
 async function mcpRequest(c: Context): Promise<Response> {
   const secret = tokenFromRequest(c); const match = secret ? await db.findWorkspaceToken(hashToken(secret)) : null; if (!match) return c.text("Unauthorized", 401);
@@ -98,11 +107,23 @@ async function mcpRequest(c: Context): Promise<Response> {
   if (request.method === "notifications/initialized") return new Response(null, { status: 202 }); if (request.method === "initialize") return jsonRpc(id, { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "m-tunnel", version: "0.2.0" } }); if (request.method === "ping") return jsonRpc(id, {}); if (request.method === "tools/list") return jsonRpc(id, { tools }); if (request.method !== "tools/call") return jsonRpcError(id, -32601, `Unknown method: ${String(request.method)}`);
   const params = (request.params && typeof request.params === "object" ? request.params : {}) as { name?: unknown; arguments?: unknown }; const name = params.name; if (!toolNames.includes(name as RelayTool)) return jsonRpcError(id, -32602, "Unknown tool");
   const agent = agents.get(match.workspace.id); const started = Date.now(); let reply: ToolReply;
+  const args = params.arguments ?? {};
+  const recordCall = async (status: "success" | "error", result: string | null, error: string | null) => {
+    await db.addToolCall({ id: crypto.randomUUID(), tool: String(name), status, workspace: match.workspace.id, userId: null, durationMs: Date.now() - started, arguments: JSON.stringify(args), result, error, createdAt: Date.now() });
+  };
   if (name === "workspace_info") reply = { ok: true, content: JSON.stringify({ workspaceId: match.workspace.id, name: match.workspace.name, root: agent?.workspacePath ?? null, platform: agent?.platform ?? null, connected: agent?.socket.readyState === WebSocket.OPEN, role: match.token.role }) };
-  else if (match.token.role === "viewer" && name !== "read") return jsonRpcError(id, -32003, "Workspace token role viewer can only call read and workspace_info", 403);
-  else if (!agent) return jsonRpcError(id, -32000, "No VS Code agent is connected", 502);
-  else { try { reply = await callAgent(agent, name as Exclude<RelayTool, "workspace_info">, params.arguments ?? {}); } catch (error) { const message = error instanceof Error ? error.message : String(error); await db.addToolCall({ id: crypto.randomUUID(), tool: String(name), status: "error", workspace: match.workspace.id, userId: null, durationMs: Date.now() - started, error: message, createdAt: Date.now() }); return jsonRpcError(id, -32000, message, 502); } }
-  await db.addToolCall({ id: crypto.randomUUID(), tool: String(name), status: reply.ok ? "success" : "error", workspace: match.workspace.id, userId: null, durationMs: Date.now() - started, error: reply.ok ? null : reply.content, createdAt: Date.now() }); return jsonRpc(id, { content: [{ type: "text", text: reply.content }], isError: !reply.ok });
+  else if (match.token.role === "viewer" && name !== "read") {
+    const message = "Workspace token role viewer can only call read and workspace_info";
+    await recordCall("error", null, message); return jsonRpcError(id, -32003, message, 403);
+  } else if (!agent) {
+    const message = "No VS Code agent is connected";
+    await recordCall("error", null, message); return jsonRpcError(id, -32000, message, 502);
+  } else {
+    try { reply = await callAgent(agent, name as Exclude<RelayTool, "workspace_info">, args); }
+    catch (error) { const message = error instanceof Error ? error.message : String(error); await recordCall("error", null, message); return jsonRpcError(id, -32000, message, 502); }
+  }
+  await recordCall(reply.ok ? "success" : "error", reply.content, reply.ok ? null : reply.content);
+  return jsonRpc(id, { content: [{ type: "text", text: reply.content }], isError: !reply.ok });
 }
 app.get("/mcp/:secret", (c) => c.text("m-tunnel MCP endpoint\n\n", 200, { "content-type": "text/event-stream", "cache-control": "no-cache", "access-control-allow-origin": "*" })); app.post("/mcp/:secret", mcpRequest);
 
