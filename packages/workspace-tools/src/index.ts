@@ -1,21 +1,17 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { spawn } from "node:child_process";
+import { workspaceFilePath } from "./paths.js";
+export { resolveWorkspacePath, workspaceFilePath } from "./paths.js";
+export { contextManifest, readContext, defaultContextReadRoots } from "./context.js";
+export type { ContextOptions, ContextManifest } from "./context.js";
 
 export interface ToolContext { readonly cwd: string }
 export interface ToolResult { readonly content: string; readonly details?: { exitCode?: number; stderr?: string } }
 
-export function resolveWorkspacePath(cwd: string, requested: string): string {
-  const root = resolve(cwd);
-  const candidate = resolve(root, requested);
-  const rel = relative(root, candidate);
-  if (rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(rel)) throw new Error(`Path is outside the workspace: ${requested}`);
-  return candidate;
-}
-
 export async function readTool(ctx: ToolContext, input: { path: string; offset?: number; limit?: number }): Promise<ToolResult> {
-  const path = resolveWorkspacePath(ctx.cwd, input.path);
+  const path = await workspaceFilePath(ctx.cwd, input.path);
   await access(path, constants.R_OK);
   const lines = (await readFile(path, "utf8")).split("\n");
   const start = Math.max(0, (input.offset ?? 1) - 1);
@@ -26,14 +22,15 @@ export async function readTool(ctx: ToolContext, input: { path: string; offset?:
 }
 
 export async function writeTool(ctx: ToolContext, input: { path: string; content: string }): Promise<ToolResult> {
-  const path = resolveWorkspacePath(ctx.cwd, input.path);
+  const path = await workspaceFilePath(ctx.cwd, input.path, true);
   await mkdir(dirname(path), { recursive: true });
+  await workspaceFilePath(ctx.cwd, input.path, true);
   await writeFile(path, input.content, "utf8");
   return { content: `Wrote ${input.path} (${Buffer.byteLength(input.content, "utf8")} bytes).` };
 }
 
 export async function editTool(ctx: ToolContext, input: { path: string; edits: Array<{ oldText: string; newText: string }> }): Promise<ToolResult> {
-  const path = resolveWorkspacePath(ctx.cwd, input.path);
+  const path = await workspaceFilePath(ctx.cwd, input.path);
   await access(path, constants.R_OK | constants.W_OK);
   const original = await readFile(path, "utf8");
   let next = original;
@@ -62,6 +59,7 @@ export async function bashTool(ctx: ToolContext, input: { command: string; timeo
 
 export async function runSelfTest(): Promise<void> {
   const root = resolve((await import("node:os")).tmpdir(), "m-tunnel-tools-test");
+  await mkdir(root, { recursive: true });
   await writeTool({ cwd: root }, { path: "test.txt", content: "a\nb\n" });
   if (!(await readTool({ cwd: root }, { path: "test.txt" })).content.includes("a")) throw new Error("read self-test failed");
   await editTool({ cwd: root }, { path: "test.txt", edits: [{ oldText: "b", newText: "c" }] });

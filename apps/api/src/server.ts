@@ -6,11 +6,12 @@ import { attachAgentServer, type Agent, type ToolReply } from "./agents.js";
 import { createDatabase, type DatabaseHandle, type GlobalRole, type SessionRecord, type WorkspaceRole } from "@m-tunnel/db";
 import type { Server } from "node:http";
 import { clearSessionCookie, cookieValue, createToken, hashPassword, hashToken, sessionCookie, verifyPassword } from "./auth.js";
+import { agentToolNames } from "@m-tunnel/protocol";
 
 const port = Number(process.env.PORT ?? 18290);
 const db = await createDatabase();
 const SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
-const toolNames = ["read", "bash", "edit", "write", "workspace_info"] as const;
+const toolNames = [...agentToolNames, "workspace_info"] as const;
 type RelayTool = (typeof toolNames)[number];
 type JsonObject = Record<string, unknown>;
 type AuthUser = { id: string; email: string; role: GlobalRole };
@@ -20,6 +21,8 @@ const tools = [
   { name: "bash", description: "Run a shell command in the VS Code workspace.", inputSchema: { type: "object", properties: { command: { type: "string" }, timeout: { type: "number", minimum: 1, maximum: 300, description: "Maximum execution time in seconds. For 2 minutes use 120, not 120000. Omit to use the VS Code setting (120 seconds by default)." } }, required: ["command"] } },
   { name: "edit", description: "Edit a file using exact unique oldText/newText replacements.", inputSchema: { type: "object", properties: { path: { type: "string" }, edits: { type: "array", items: { type: "object", properties: { oldText: { type: "string" }, newText: { type: "string" } }, required: ["oldText", "newText"] } } }, required: ["path", "edits"] } },
   { name: "write", description: "Write or create a file in the VS Code workspace.", inputSchema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } },
+  { name: "context_manifest", description: "开始任务及切换目标目录时先调用。返回所选全局 AGENTS.md、项目根到目标目录的逐层 AGENTS.md，以及递归发现并按名称去重的 skills 元数据。全局和同名 skills 优先 ~/.codex，回退 ~/.agents；项目规则叠加，深层规则在其子树内覆盖冲突。随后使用 read_context 按顺序读取规则，按需读取 skill 正文及其引用。", inputSchema: { type: "object", properties: { path: { type: "string", description: "工作区内的目标文件（可尚未创建）或已有目录，默认项目根目录。" } }, additionalProperties: false } },
+  { name: "read_context", description: "按需读取 context_manifest 中的规则、skill 或其引用的上下文文件，支持相对路径、绝对路径和 ~/。仅允许工作区和本机 contextReadRoots（默认 ~/.codex、~/.agents）内的普通文件，最多 1 MiB；正文不存入调用记录。", inputSchema: { type: "object", properties: { path: { type: "string" }, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1, maximum: 1000 } }, required: ["path"], additionalProperties: false } },
   { name: "workspace_info", description: "Get the connected VS Code workspace path, platform, and connection state.", inputSchema: { type: "object", properties: {} } }
 ] as const;
 
@@ -41,6 +44,7 @@ function tokenFromRequest(c: Context): string { const authorization = c.req.head
 
 async function callAgent(agent: Agent, tool: Exclude<RelayTool, "workspace_info">, args: unknown): Promise<ToolReply> {
   if (agent.socket.readyState !== WebSocket.OPEN) throw new Error("No VS Code agent is connected");
+  if (!agent.tools.includes(tool)) throw new Error("当前 VS Code Agent 不支持此工具，请更新 m-tunnel 插件并重新连接");
   const id = crypto.randomUUID(); agent.socket.send(JSON.stringify({ type: "tool_call", id, tool, arguments: args }));
   return await new Promise<ToolReply>((resolve, reject) => { const timer = setTimeout(() => { agent.pending.delete(id); reject(new Error("VS Code tool call timed out")); }, 300_000); agent.pending.set(id, { resolve, reject, timer }); });
 }
@@ -104,12 +108,14 @@ async function mcpRequest(c: Context): Promise<Response> {
   const secret = tokenFromRequest(c); const match = secret ? await db.findWorkspaceToken(hashToken(secret)) : null; if (!match) return c.text("Unauthorized", 401);
   let body: unknown; try { body = await c.req.json(); } catch { return jsonRpcError(null, -32700, "Parse error"); } if (!body || typeof body !== "object") return jsonRpcError(null, -32600, "Invalid JSON-RPC request");
   const request = body as { id?: unknown; method?: unknown; params?: unknown }; const id = request.id ?? null;
-  if (request.method === "notifications/initialized") return new Response(null, { status: 202 }); if (request.method === "initialize") return jsonRpc(id, { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "m-tunnel", version: "0.2.0" } }); if (request.method === "ping") return jsonRpc(id, {}); if (request.method === "tools/list") return jsonRpc(id, { tools }); if (request.method !== "tools/call") return jsonRpcError(id, -32601, `Unknown method: ${String(request.method)}`);
+  if (request.method === "notifications/initialized") return new Response(null, { status: 202 }); if (request.method === "initialize") return jsonRpc(id, { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "m-tunnel", version: "0.2.0" }, instructions: match.token.role === "viewer" ? "此 Token 仅可通过 read 读取工作区文件，通过 workspace_info 查询连接信息。" : "开始任务及切换目标目录时先调用 context_manifest，按顺序用 read_context 读取适用的 AGENTS.md；按需读取去重后的 skills，规则只应用于各自作用域。" }); if (request.method === "ping") return jsonRpc(id, {}); if (request.method === "tools/list") return jsonRpc(id, { tools: match.token.role === "viewer" ? tools.filter((tool) => tool.name === "read" || tool.name === "workspace_info") : tools }); if (request.method !== "tools/call") return jsonRpcError(id, -32601, `Unknown method: ${String(request.method)}`);
   const params = (request.params && typeof request.params === "object" ? request.params : {}) as { name?: unknown; arguments?: unknown }; const name = params.name; if (!toolNames.includes(name as RelayTool)) return jsonRpcError(id, -32602, "Unknown tool");
   const agent = agents.get(match.workspace.id); const started = Date.now(); let reply: ToolReply;
   const args = params.arguments ?? {};
   const recordCall = async (status: "success" | "error", result: string | null, error: string | null) => {
-    await db.addToolCall({ id: crypto.randomUUID(), tool: String(name), status, workspace: match.workspace.id, userId: null, durationMs: Date.now() - started, arguments: JSON.stringify(args), result, error, createdAt: Date.now() });
+    // 上下文含本机私密内容：连错误原文与参数也不能落库，失败只存固定摘要。
+    const privateContext = name === "context_manifest" || name === "read_context";
+    await db.addToolCall({ id: crypto.randomUUID(), tool: String(name), status, workspace: match.workspace.id, userId: null, durationMs: Date.now() - started, arguments: privateContext ? null : JSON.stringify(args), result: privateContext ? null : result, error: privateContext ? (status === "error" ? "上下文调用失败；原文未保存" : null) : error, createdAt: Date.now() });
   };
   let agentArgs = args;
   if (name === "bash") {

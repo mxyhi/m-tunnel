@@ -2,7 +2,7 @@
   "name": "m-tunnel-vscode",
   "displayName": "m-tunnel Workspace MCP",
   "description": "Expose the current VS Code workspace as a guarded MCP server.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "mxyer",
   "icon": "icon.png",
   "license": "MIT",
@@ -80,6 +80,13 @@
           "default": 120000,
           "minimum": 1000,
           "maximum": 300000
+        },
+        "mTunnel.contextReadRoots": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": ["~/.codex", "~/.agents"],
+          "scope": "machine",
+          "description": "允许 read_context 读取的本机目录（递归），支持 ~/ 和相对工作区路径。仅用户/远端机器设置生效；设为空数组关闭外部上下文读取。授权整个目录及其中所有普通文件。"
         }
       }
     }
@@ -91,6 +98,7 @@
   },
   "dependencies": {
     "@m-tunnel/protocol": "workspace:*",
+    "@m-tunnel/workspace-tools": "workspace:*",
     "ws": "^8.18.3"
   },
   "devDependencies": {

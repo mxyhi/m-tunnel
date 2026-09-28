@@ -15,11 +15,24 @@ Token 按文件夹保存在 VS Code SecretStorage 中。新导入不会写入可
 
 ## 工具与设置
 
-支持 `read`、`bash`、`edit`、`write` 和 `workspace_info`。新连接统一提供工具读写能力，不再选择只读 Token。
+支持 `read`、`bash`、`edit`、`write`、`workspace_info`、`context_manifest` 和 `read_context`。新连接统一提供工具读写能力，不再选择只读 Token。
 
 - `mTunnel.autoStart`：打开工作区后自动连接。
 - `mTunnel.bashTimeoutMs`：命令超时，默认 120 秒。
+- `mTunnel.contextReadRoots`：额外可读的本机目录，默认 `["~/.codex", "~/.agents"]`，递归允许整个目录；仅用户/远端机器设置生效，空数组关闭外部读取。
 - 必须打开可信工作区；导入外部链接时会显示具体服务与文件夹供确认。
 - 断网会自动重连；凭据无效、被撤销、绑定错误文件夹或被其他窗口接管时停止重试并显示通知。
 
 扩展 ID：`mxyer.m-tunnel-vscode`。本版本需要支持 `agent_ready` 的新版 m-tunnel 服务端。
+
+## 规则与 skills
+
+先调用 `context_manifest`（可传入目标文件或已有目录 `path`），再用 `read_context` 按顺序读取返回的 AGENTS，按需读取 skill 正文及引用文件：
+
+- 全局优先 `~/.codex/AGENTS.md`，不存在才用 `~/.agents/AGENTS.md`。
+- 项目根及沿目标路径的每层 `AGENTS.md` 均叠加，深层规则只在其子树内覆盖冲突。
+- 两个来源的 `skills/**/SKILL.md` 递归发现，包括多层和隐藏目录；按 YAML `name`（缺省目录名）去重，`~/.codex` 优先。同源同名按路径顺序取首项。
+
+`read_context` 支持 `~/`、绝对和工作区相对路径，默认读取 400 行，可传 `offset`/`limit` 继续，单文件最大 1 MiB。普通 `read/write/edit` 保持工作区范围；软链接的真实目标也须在对应授权范围内，skills 外链越界会出现在 manifest 的 `warnings` 中。要使用白名单外的共享 skills 链接，可在本机设置中额外加入链接的真实目录。
+
+上下文工具的参数、正文和错误原文不保存到 Relay 调用记录。扩展 v0.1.3 需要配套服务 v0.1.5 并刷新 MCP 工具列表；客户端根据工具提示按需加载上下文。

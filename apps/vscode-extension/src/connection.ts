@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import WebSocket from "ws";
-import type { ToolCallMessage, ToolName } from "@m-tunnel/protocol";
+import { agentToolNames, isToolName, type ToolCallMessage, type ToolName } from "@m-tunnel/protocol";
 import { mcpUrl, parseConnectionUri, validateConnection, type ConnectionConfig } from "./connection-config.js";
 
 type ToolReply = { ok: boolean; content: string; details?: { exitCode?: number; stderr?: string } };
@@ -78,7 +78,7 @@ export function activateConnections(context: vscode.ExtensionContext, execute: E
       const deadline = setTimeout(() => { if (client === ws && !ready) { reportFailure("工作区登记超时，请确认服务端已更新"); ws.close(); } }, 20_000);
       ws.on("open", () => {
         if (client !== ws) return;
-        ws.send(JSON.stringify({ type: "agent_hello", name: root.name, workspace: root.uri.fsPath, platform: process.platform, bindingKey: `${vscode.env.machineId}:${root.uri.toString()}` }));
+        ws.send(JSON.stringify({ type: "agent_hello", name: root.name, workspace: root.uri.fsPath, platform: process.platform, bindingKey: `${vscode.env.machineId}:${root.uri.toString()}`, tools: agentToolNames }));
       });
       ws.on("message", async (raw: Buffer) => {
         if (client !== ws) return;
@@ -97,9 +97,13 @@ export function activateConnections(context: vscode.ExtensionContext, execute: E
             failureNotified = false;
             return;
           }
-          if (!ready || message.type !== "tool_call" || typeof message.id !== "string" || !message.tool || !message.arguments || !["read", "bash", "edit", "write"].includes(message.tool)) return;
+          if (!ready || message.type !== "tool_call" || typeof message.id !== "string") return;
           let result: ToolReply;
-          try { result = await execute(root, message.tool, message.arguments as unknown as Record<string, unknown>); }
+          try {
+            if (!isToolName(message.tool)) throw new Error("不支持的工具，请更新 m-tunnel 插件");
+            if (!message.arguments || typeof message.arguments !== "object" || Array.isArray(message.arguments)) throw new Error("工具参数必须是对象");
+            result = await execute(root, message.tool, message.arguments as unknown as Record<string, unknown>);
+          }
           catch (error) { result = { ok: false, content: error instanceof Error ? error.message : String(error) }; }
           // A completed command belongs to its original connection, never to
           // whichever window/credential connected while it was running.
@@ -135,7 +139,7 @@ export function activateConnections(context: vscode.ExtensionContext, execute: E
     try {
       const config = parseConnectionUri(uri.toString(true));
       const root = rootFolder();
-      const choice = await vscode.window.showInformationMessage(`将“${root.name}”连接到 ${config.relayUrl}？连接后该服务可在此文件夹执行文件和命令工具。`, { modal: true }, "连接");
+      const choice = await vscode.window.showInformationMessage(`将“${root.name}”连接到 ${config.relayUrl}？连接后该服务可执行文件和命令工具，并按本机 contextReadRoots 设置读取外部上下文（默认 ~/.codex、~/.agents）。命令以当前用户权限运行。`, { modal: true }, "连接");
       if (choice !== "连接") return;
       await context.secrets.store(secretKey(root), JSON.stringify(config));
       output.appendLine(JSON.stringify({ event: "connection_imported", workspace: root.name, relay: config.relayUrl }));

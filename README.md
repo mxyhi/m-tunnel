@@ -4,7 +4,7 @@
 
 ## 功能
 
-- `read`、`bash`、`edit`、`write` 和 `workspace_info`
+- `read`、`bash`、`edit`、`write`、`workspace_info`、`context_manifest` 和 `read_context`
 - 多用户、登录会话、全局角色（`admin` / `member`）
 - 工作区成员角色（`owner` / `editor` / `viewer`）
 - 每个工作区独立 MCP Token，可撤销；数据库只保存哈希
@@ -68,3 +68,45 @@ git push origin vscode-v0.1.2
 从 v0.1.3 开始，MCP `bash` 的 `timeout` 明确以秒为单位，范围为 1–300；例如 `{"command":"pnpm build","timeout":120}` 允许执行 2 分钟。省略时使用 VS Code 的 `mTunnel.bashTimeoutMs` 配置，默认 120 秒。Relay 将秒数换算为现有插件所需的毫秒，无需更新插件。
 
 旧版 MCP 参数未标明单位，直接按毫秒执行，容易把 `60` 或 `120` 压到最低 1 秒。原先手动传毫秒的客户端需改传秒，并刷新工具定义；超出范围的值会被拒绝，不会执行命令。
+
+## 本机规则与 skills
+
+开始任务或切换目标目录时，先调用 `context_manifest`，例如 `{"path":"apps/api/src/server.ts"}`。`path` 支持工作区内的文件（可尚未创建）或已有目录，省略时为项目根。返回值仅包含来源、作用域和技能元数据，不包含规则或 skill 正文。
+
+规则按以下顺序读取并组合：
+
+1. `~/.codex/AGENTS.md`；仅该文件不存在时回退至 `~/.agents/AGENTS.md`。存在但无法读取时返回错误。
+2. 项目根 `AGENTS.md`。
+3. 沿目标路径逐层出现的 `AGENTS.md`。例如 `apps/AGENTS.md`、`apps/api/AGENTS.md`、`apps/api/src/AGENTS.md`。
+
+项目规则不按文件名去重。不同层级叠加，同一事项冲突时深层规则优先且只作用于其子树；兄弟目录和工作区祖先目录不会自动纳入。项目内软链接按真实目标路径收集规则，manifest 的 `target` 返回规范后的目标。
+
+skills 递归扫描 `~/.codex/skills/**/SKILL.md` 和 `~/.agents/skills/**/SKILL.md`，包括 `.system` 等隐藏目录以及 skill 内的嵌套 skill。名称取 YAML frontmatter 的 `name`，缺省取父目录名；按完整名称区分大小写去重，固定 `~/.codex` 优先，同源按路径顺序选首项。支持 YAML 引号与多行描述；索引只解析最多 64 KiB 的头部，正文按需读取。扫描跳过 `.git`、`node_modules`，超过 10000 项会报错；格式错误或越界软链接会在 manifest 的 `warnings` 中列出。
+
+按 manifest 中的顺序通过 `read_context` 读取规则，选中 skill 后再读取正文及其引用文件：
+
+```json
+{"path":"~/.codex/AGENTS.md"}
+```
+
+```json
+{"path":"~/.agents/skills/team/frontend/react/SKILL.md","offset":1,"limit":400}
+```
+
+`read_context` 支持工作区相对路径、绝对路径、`~/`，以及 `offset`（从 1 开始）和 `limit`（1–1000 行，默认 400）。单文件上限 1 MiB，只读取普通文件。它提供完整授权根的读取能力，既不限于 `skills`/`memories`，也不负责执行读取到的脚本。
+
+VS Code 用户或远端机器设置：
+
+```json
+{
+  "mTunnel.contextReadRoots": ["~/.codex", "~/.agents"]
+}
+```
+
+`~` 指扩展运行机器的用户目录。设置为空数组可关闭外部读取；工作区自身仍可读。配置不会被仓库 `.vscode/settings.json` 覆写。其他根可显式加入白名单供 `read_context` 读取，自动规则/skills 发现仍来自上述两个固定来源及当前项目。
+
+路径同时检查词法边界和真实软链接目标。软链接可以指向另一个已授权根；指向白名单外的共享 skills 仓库时会跳过并提示，需显式授权其真实目录后才能读取。普通 `read/write/edit` 始终检查工作区边界，不能通过链接访问外部上下文目录。`bash` 仍按扩展进程的用户权限执行，读取根配置不构成命令沙箱。
+
+两个上下文工具仅允许 owner/editor Token。Relay 不保存它们的参数、返回正文或错误原文，只记录工具、状态、耗时和固定失败摘要；普通工具的调用记录策略不变。MCP 初始化说明与工具描述会提示上述读取流程，客户端仍需实际调用工具，不会自动向任意客户端注入整份上下文。
+
+此功能随服务 v0.1.5、VS Code 扩展 v0.1.3 发布，需要同时更新并刷新客户端工具定义。旧插件继续支持原四个执行工具；调用新工具会立即提示升级，不再等待超时。无需数据库迁移。

@@ -2,10 +2,11 @@ import { WebSocket, WebSocketServer } from "ws";
 import type { Server } from "node:http";
 import type { DatabaseHandle, WorkspaceTokenMatch } from "@m-tunnel/db";
 import { hashToken } from "./auth.js";
+import { isToolName, type ToolName } from "@m-tunnel/protocol";
 
 export type ToolReply = { ok: boolean; content: string; details?: { exitCode?: number; stderr?: string } };
 export type Pending = { resolve: (value: ToolReply) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
-export type Agent = { socket: WebSocket; tokenId: string; workspacePath: string; platform: string; pending: Map<string, Pending> };
+export type Agent = { socket: WebSocket; tokenId: string; workspacePath: string; platform: string; tools: readonly ToolName[]; pending: Map<string, Pending> };
 
 export function attachAgentServer(server: Server, db: DatabaseHandle, agents: Map<string, Agent>): void {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
@@ -20,7 +21,7 @@ export function attachAgentServer(server: Server, db: DatabaseHandle, agents: Ma
   });
   wss.on("connection", (client: WebSocket, match: WorkspaceTokenMatch, tokenHash: string) => {
     const workspaceId = match.workspace.id;
-    const agent: Agent = { socket: client, tokenId: match.token.id, workspacePath: "", platform: "", pending: new Map() };
+    const agent: Agent = { socket: client, tokenId: match.token.id, workspacePath: "", platform: "", tools: ["read", "bash", "edit", "write"], pending: new Map() };
     let registered = false;
     let registering = false;
     const deadline = setTimeout(() => client.close(4000, "registration_timeout"), 15_000);
@@ -35,6 +36,10 @@ export function attachAgentServer(server: Server, db: DatabaseHandle, agents: Ma
           const platform = hello.platform;
           const name = hello.name ?? (typeof path === "string" ? path.split(/[\\/]/).filter(Boolean).at(-1) : undefined);
           const bindingKey = hello.bindingKey ?? `${platform}:${path}`;
+          if (hello.tools !== undefined) {
+            if (!Array.isArray(hello.tools) || !hello.tools.every((tool) => typeof tool === "string")) { client.close(4000, "invalid_tools"); return; }
+            agent.tools = hello.tools.filter(isToolName);
+          }
           if (typeof path !== "string" || !path || path.length > 4096 || typeof platform !== "string" || platform.length > 50 || typeof name !== "string" || !name.trim() || name.length > 255 || typeof bindingKey !== "string" || !bindingKey || bindingKey.length > 4096) {
             client.close(4000, "invalid_workspace"); return;
           }
