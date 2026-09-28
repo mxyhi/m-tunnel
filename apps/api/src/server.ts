@@ -44,7 +44,8 @@ function tokenFromRequest(c: Context): string { const authorization = c.req.head
 
 async function callAgent(agent: Agent, tool: Exclude<RelayTool, "workspace_info">, args: unknown): Promise<ToolReply> {
   if (agent.socket.readyState !== WebSocket.OPEN) throw new Error("No VS Code agent is connected");
-  if (!agent.tools.includes(tool)) throw new Error("当前 VS Code Agent 不支持此工具，请更新 m-tunnel 插件并重新连接");
+  // 能力不匹配是工具执行错误；避免 HTTP 502 被公网代理替换，丢失升级提示。
+  if (!agent.tools.includes(tool)) return { ok: false, content: "当前 VS Code Agent 不支持此工具，请更新 m-tunnel 插件并重新连接" };
   const id = crypto.randomUUID(); agent.socket.send(JSON.stringify({ type: "tool_call", id, tool, arguments: args }));
   return await new Promise<ToolReply>((resolve, reject) => { const timer = setTimeout(() => { agent.pending.delete(id); reject(new Error("VS Code tool call timed out")); }, 300_000); agent.pending.set(id, { resolve, reject, timer }); });
 }

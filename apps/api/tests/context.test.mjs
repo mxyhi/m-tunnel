@@ -46,7 +46,9 @@ test('上下文 MCP 链路：实际发现与读取、旧插件拒绝、viewer �
   legacy.on('message', (raw) => { const request = JSON.parse(raw.toString()); received++; legacy.send(JSON.stringify({ type: 'tool_result', id: request.id, ok: true, content: 'legacy-ok' })); });
   for (const name of ['context_manifest', 'read_context']) {
     const response = await call(name, { path: 'PRIVATE_ARGUMENT' });
-    assert.equal(response.status, 502); assert.match((await response.json()).error.message, /更新/);
+    assert.equal(response.status, 200, '升级提示必须透过公网代理，不能触发 502 错误页');
+    const reply = (await response.json()).result;
+    assert.equal(reply.isError, true); assert.match(reply.content[0].text, /更新/);
   }
   assert.equal(received, 0, '不把新工具发给旧插件等待超时');
   assert.equal((await (await call('read', { path: 'AGENTS.md' })).json()).result.content[0].text, 'legacy-ok');
